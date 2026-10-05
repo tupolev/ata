@@ -20,7 +20,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "FIND_HUB_API_KEY", "\"$findHubApiKey\"")
+        resValue("string", "find_hub_api_key", findHubApiKey)
     }
     buildTypes {
         release {
@@ -34,7 +34,6 @@ android {
     }
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 }
 wire { kotlin { android = true } }
