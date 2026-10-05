@@ -1,0 +1,37 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Build installable debug APK
+        run: gradle assembleDebug
+        env:
+          ATA_GOOGLE_API_KEY: ${{ secrets.ATA_GOOGLE_API_KEY }}
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "ATA-${GITHUB_REF_NAME}.apk"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" "ATA-${GITHUB_REF_NAME}.apk" --generate-notes --title "ATA ${GITHUB_REF_NAME}"
