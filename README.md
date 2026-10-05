@@ -256,6 +256,52 @@ The public repository must not contain personal tracker IDs, coordinates, tokens
 
 Android periodic WorkManager jobs have a 15-minute minimum interval. ATA therefore uses a foreground service while monitoring is active, with a persistent notification. The default polling interval is 5 minutes.
 
+## Build-time Find Hub API key
+
+ATA does not commit the Google/FCM client API key to the repository because GitHub Secret Scanning flags Google-style `AIza...` keys even when they are public client identifiers inherited from the upstream protocol implementation.
+
+For local builds, provide the key as a Gradle property or environment variable named:
+
+```text
+ATA_GOOGLE_API_KEY
+```
+
+Example with `~/.gradle/gradle.properties`:
+
+```properties
+ATA_GOOGLE_API_KEY=your_key_here
+```
+
+or for one shell session:
+
+```bash
+export ATA_GOOGLE_API_KEY='your_key_here'
+gradle assembleDebug
+```
+
+For GitHub Actions, create a repository Actions secret named:
+
+```text
+ATA_GOOGLE_API_KEY
+```
+
+under **Settings → Secrets and variables → Actions → New repository secret**.
+
+The normal CI build can still compile without the value, but runtime Find Hub FCM registration requires it.
+
+### Automatic APK releases
+
+The repository includes `.github/workflows/release.yml`.
+
+When a tag such as `v0.1.0` is pushed, GitHub Actions:
+
+1. builds an installable debug-signed APK;
+2. renames it to `ATA-v0.1.0.apk`;
+3. creates a GitHub Release automatically;
+4. attaches the APK to that release.
+
+Make sure `ATA_GOOGLE_API_KEY` exists as a GitHub Actions secret before creating the release tag.
+
 ## Build
 
 Open the project in a current Android Studio installation, or use Gradle 9.5+ with JDK 17:
