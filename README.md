@@ -124,8 +124,11 @@ ATA currently imports these values when present:
 - `aas_token`
 - `shared_key`
 - `owner_key`
+- `fcm_credentials`
 
-GoogleFindMyTools may also store additional data such as FCM credentials. ATA does not need to retain the original JSON after importing the required values.
+When `fcm_credentials` is present, ATA converts and reuses the existing GoogleFindMyTools GCM/FCM registration and encryption keys instead of immediately creating a new registration. This makes the recommended import path more self-contained and reduces dependence on build-time FCM registration.
+
+ATA does not retain the original JSON after importing the required values.
 
 #### 4. Transfer `secrets.json` to the Android device
 
@@ -154,7 +157,7 @@ ATA copies the required values into **encrypted Android storage backed by the An
 After a successful import ATA should:
 
 1. reuse the stored Google/Find Hub credentials;
-2. obtain any app-specific FCM registration it still needs;
+2. reuse imported FCM credentials when available, or obtain a new app-specific FCM registration if needed;
 3. load the trackers belonging to the account;
 4. show them on the **Trackers** screen.
 
@@ -287,7 +290,7 @@ ATA_GOOGLE_API_KEY
 
 under **Settings → Secrets and variables → Actions → New repository secret**.
 
-The normal CI build can still compile without the value, but runtime Find Hub FCM registration requires it.
+The normal CI build can still compile without the value. Runtime creation of a **new** Find Hub FCM registration requires it. A complete GoogleFindMyTools `secrets.json` that already contains reusable `fcm_credentials` can avoid that registration step on the recommended import path.
 
 ### Automatic APK releases
 
