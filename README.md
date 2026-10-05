@@ -56,7 +56,7 @@ Android periodic WorkManager jobs have a 15-minute minimum interval. ATA therefo
 
 ## Build
 
-Open the project in a current Android Studio installation, or use Gradle 9.1+ with JDK 17:
+Open the project in a current Android Studio installation, or use Gradle 9.5+ with JDK 17:
 
 ```bash
 gradle assembleDebug
