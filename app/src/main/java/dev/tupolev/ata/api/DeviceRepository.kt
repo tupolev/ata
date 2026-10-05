@@ -1,0 +1,419 @@
+package dev.tupolev.ata.api
+
+import android.content.Context
+import android.provider.Settings
+import android.util.Base64
+import android.util.Log
+import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import dev.tupolev.ata.auth.GoogleAuthClient
+import dev.tupolev.ata.auth.TokenStorage
+import dev.tupolev.ata.proto.DeviceUpdate
+import dev.tupolev.ata.push.FcmCredentials
+import dev.tupolev.ata.push.FcmRegistrationClient
+import dev.tupolev.ata.push.HttpEceDecryptor
+import dev.tupolev.ata.push.McsClient
+import dev.tupolev.ata.util.LocationDecryptor
+
+class DeviceRepository(context: Context) {
+
+    private val tokenStorage = TokenStorage(context)
+    private val androidId: String = Settings.Secure.getString(
+        context.contentResolver, Settings.Secure.ANDROID_ID
+    )
+
+    private var fcmCredentials: FcmCredentials? = null
+    private var mcsClient: McsClient? = null
+    private var pendingRequestUuid: String? = null
+    private var pendingDeviceId: String? = null
+    private var firebaseToken: String? = null
+
+    val savedOauthToken: String? get() = tokenStorage.getToken()
+
+    fun hasSharedKey(): Boolean = tokenStorage.getSharedKey() != null
+
+    fun saveCredentials(email: String, oauthToken: String) {
+        tokenStorage.saveEmail(email)
+        tokenStorage.saveToken(oauthToken)
+    }
+
+    fun saveSharedKey(sharedKey: ByteArray) {
+        tokenStorage.saveSharedKey(sharedKey.joinToString("") { "%02x".format(it) })
+    }
+
+    fun signOut() {
+        tokenStorage.clear()
+    }
+
+    val serverUrl: String get() = tokenStorage.getServerUrl() ?: DEFAULT_SERVER_URL
+
+    fun saveServerUrl(url: String) {
+        tokenStorage.saveServerUrl(url)
+        registerDevicesOnServer()
+    }
+
+    fun onFirebaseTokenChanged(token: String) {
+        firebaseToken = token
+        registerDevicesOnServer()
+    }
+
+    fun loadDevices(oauthToken: String, sharedKey: ByteArray? = null): List<Device> {
+        ensureAasToken(oauthToken)
+
+        if (sharedKey != null && tokenStorage.getOwnerKey() == null) {
+            try {
+                fetchOwnerKey(sharedKey)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching owner key", e)
+            }
+        }
+
+        val devices = NovaApiClient.listDevices(getAdmToken())
+        tokenStorage.saveDeviceIds(devices.map { it.id })
+        ensureFcmRegistered()
+        registerDevicesOnServer()
+        return devices
+    }
+
+    // Push connection
+
+    private fun startPushConnection(onLocationUpdate: (String, LocationResult) -> Unit) {
+        val creds = fcmCredentials ?: return
+        if (mcsClient != null) return
+
+        val client = McsClient()
+        mcsClient = client
+
+        try {
+            client.connect(creds.gcmAndroidId, creds.gcmSecurityToken) { message ->
+                handlePushMessage(creds, message, onLocationUpdate)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "MCS connection error", e)
+            mcsClient = null
+        }
+    }
+
+    private fun stopPushConnection() {
+        mcsClient?.disconnect()
+        mcsClient = null
+    }
+
+    fun requestAndUploadLocation(deviceId: String) {
+        val serverUrl = tokenStorage.getServerUrl() ?: return
+        ensureFcmRegistered()
+
+        val latch = CountDownLatch(1)
+        var result: LocationResult? = null
+
+        val thread = Thread {
+            startPushConnection { id, locationResult ->
+                if (id == deviceId) {
+                    result = locationResult
+                    latch.countDown()
+                }
+            }
+        }
+        thread.start()
+
+        try {
+            requestLocation(deviceId)
+            latch.await(30, TimeUnit.SECONDS)
+        } finally {
+            stopPushConnection()
+            thread.join(5000)
+        }
+
+        val entry = result?.locations
+            ?.firstOrNull { it.latitude != null && it.longitude != null }
+            ?: return
+
+        TraccarApiClient.sendLocation(
+            serverUrl, deviceId,
+            lat = entry.latitude!!,
+            lon = entry.longitude!!,
+            timestamp = entry.timestamp / 1000,
+            accuracy = entry.accuracy,
+            altitude = entry.altitude,
+        )
+    }
+
+    fun requestLocationOnce(deviceId: String, timeoutSeconds: Long = 35): LocationResult? {
+        ensureFcmRegistered()
+
+        val latch = CountDownLatch(1)
+        var result: LocationResult? = null
+
+        val thread = Thread {
+            startPushConnection { id, locationResult ->
+                if (id == deviceId) {
+                    result = locationResult
+                    latch.countDown()
+                }
+            }
+        }
+        thread.start()
+
+        try {
+            Thread.sleep(500)
+            requestLocation(deviceId)
+            latch.await(timeoutSeconds, TimeUnit.SECONDS)
+        } finally {
+            stopPushConnection()
+            thread.join(5000)
+        }
+        return result
+    }
+
+    fun hasReusableCredentials(): Boolean =
+        tokenStorage.getAasToken() != null && tokenStorage.getOwnerKey() != null
+
+    fun loadDevicesFromStoredCredentials(): List<Device> {
+        if (tokenStorage.getAasToken() == null) throw Exception("No stored AAS token")
+        val devices = NovaApiClient.listDevices(getAdmToken())
+        tokenStorage.saveDeviceIds(devices.map { it.id })
+        ensureFcmRegistered()
+        return devices
+    }
+
+    private fun requestLocation(deviceId: String) {
+        val creds = fcmCredentials ?: throw Exception("FCM not registered")
+        val admToken = getAdmToken()
+        val (payload, requestUuid) = NovaApiClient.buildLocationRequest(deviceId, creds.fcmToken)
+        pendingRequestUuid = requestUuid
+        pendingDeviceId = deviceId
+        NovaApiClient.executeAction(admToken, payload)
+    }
+
+    // Private helpers
+
+    private fun ensureAasToken(oauthToken: String) {
+        if (tokenStorage.getAasToken() != null) return
+        val email = tokenStorage.getEmail() ?: ""
+        val exchangeResult = GoogleAuthClient.exchangeToken(email, oauthToken, androidId)
+        val aasToken = exchangeResult["Token"]
+            ?: throw Exception("Failed to get AAS token: ${exchangeResult["Error"]}")
+        tokenStorage.saveAasToken(aasToken)
+        exchangeResult["Email"]?.let { tokenStorage.saveEmail(it) }
+    }
+
+    private fun fetchOwnerKey(sharedKey: ByteArray) {
+        val email = tokenStorage.getEmail() ?: ""
+        val aasToken = tokenStorage.getAasToken() ?: throw Exception("No AAS token")
+        val oauthResult = GoogleAuthClient.performOAuth(email, aasToken, androidId, "spot", "com.google.android.gms")
+        val spotToken = oauthResult["Auth"] ?: throw Exception("Failed to get Spot token: ${oauthResult["Error"]}")
+        val encryptedOwnerKey = SpotApiClient.getEncryptedOwnerKey(spotToken)
+        val ownerKey = LocationDecryptor.decryptOwnerKey(sharedKey, encryptedOwnerKey)
+        tokenStorage.saveOwnerKey(ownerKey.joinToString("") { "%02x".format(it) })
+    }
+
+    private fun getAdmToken(): String {
+        val email = tokenStorage.getEmail() ?: ""
+        val aasToken = tokenStorage.getAasToken() ?: throw Exception("No AAS token")
+        val oauthResult = GoogleAuthClient.performOAuth(email, aasToken, androidId, "android_device_manager")
+        return oauthResult["Auth"] ?: throw Exception("Failed to get ADM token: ${oauthResult["Error"]}")
+    }
+
+    private fun ensureFcmRegistered() {
+        if (fcmCredentials != null) return
+
+        val cached = tokenStorage.getFcmCredentials()
+        if (cached != null) {
+            try {
+                val json = JSONObject(cached)
+                fcmCredentials = FcmCredentials(
+                    gcmAndroidId = json.getString("gcmAndroidId"),
+                    gcmSecurityToken = json.getString("gcmSecurityToken"),
+                    gcmToken = json.getString("gcmToken"),
+                    gcmAppId = json.getString("gcmAppId"),
+                    fcmToken = json.getString("fcmToken"),
+                    publicKey = json.getString("publicKey"),
+                    privateKey = json.getString("privateKey"),
+                    authSecret = json.getString("authSecret"),
+                )
+                return
+            } catch (_: Exception) {
+            }
+        }
+
+        val creds = FcmRegistrationClient.register()
+        fcmCredentials = creds
+
+        val json = JSONObject().apply {
+            put("gcmAndroidId", creds.gcmAndroidId)
+            put("gcmSecurityToken", creds.gcmSecurityToken)
+            put("gcmToken", creds.gcmToken)
+            put("gcmAppId", creds.gcmAppId)
+            put("fcmToken", creds.fcmToken)
+            put("publicKey", creds.publicKey)
+            put("privateKey", creds.privateKey)
+            put("authSecret", creds.authSecret)
+        }
+        tokenStorage.saveFcmCredentials(json.toString())
+    }
+
+    private fun handlePushMessage(
+        creds: FcmCredentials,
+        message: dev.tupolev.ata.proto.mcs.DataMessageStanza,
+        onLocationUpdate: (String, LocationResult) -> Unit,
+    ) {
+        try {
+            val appDataMap = message.app_data.associate { it.key to it.value_ }
+
+            val cryptoKey = appDataMap["crypto-key"]?.removePrefix("dh=") ?: return
+            val salt = appDataMap["encryption"]?.removePrefix("salt=") ?: return
+            val rawData = message.raw_data?.toByteArray() ?: return
+
+            val decrypted = HttpEceDecryptor.decrypt(
+                rawData = rawData,
+                saltBase64 = salt,
+                cryptoKeyBase64 = cryptoKey,
+                privateKeyBase64 = creds.privateKey,
+                publicKeyBase64 = creds.publicKey,
+                authSecretBase64 = creds.authSecret,
+            )
+
+            val jsonStr = String(decrypted, Charsets.UTF_8)
+            val json = JSONObject(jsonStr)
+            val data = json.optJSONObject("data")
+            val fcmPayload = data?.optString("com.google.android.apps.adm.FCM_PAYLOAD")
+
+            if (fcmPayload != null) {
+                val payloadBytes = Base64.decode(fcmPayload, Base64.DEFAULT)
+                val deviceUpdate = DeviceUpdate.ADAPTER.decode(payloadBytes)
+                val requestUuid = deviceUpdate.fcmMetadata?.requestUuid
+
+                if (requestUuid == pendingRequestUuid) {
+                    val deviceId = pendingDeviceId ?: return
+                    pendingRequestUuid = null
+                    pendingDeviceId = null
+                    onLocationUpdate(deviceId, buildLocationResult(deviceUpdate))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling push message", e)
+        }
+    }
+
+    private fun buildLocationResult(deviceUpdate: DeviceUpdate): LocationResult {
+        val metadata = deviceUpdate.deviceMetadata
+        val deviceName = metadata?.userDefinedDeviceName ?: "Unknown"
+        val information = metadata?.information
+        val reports = information?.locationInformation?.reports?.recentLocationAndNetworkLocations
+
+        val ownerKeyHex = tokenStorage.getOwnerKey()
+        val ownerKey = ownerKeyHex?.chunked(2)?.map { it.toInt(16).toByte() }?.toByteArray()
+
+        val encryptedEik = information?.deviceRegistration
+            ?.encryptedUserSecrets?.encryptedIdentityKey?.toByteArray()
+
+        var identityKey: ByteArray? = null
+        if (ownerKey != null && encryptedEik != null) {
+            try {
+                identityKey = LocationDecryptor.decryptEik(ownerKey, encryptedEik)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error decrypting EIK", e)
+            }
+        }
+
+        val locations = mutableListOf<LocationEntry>()
+
+        if (reports != null) {
+            val recentLoc = reports.recentLocation
+            val recentTime = reports.recentLocationTimestamp
+            if (recentLoc != null) {
+                locations.add(buildLocationEntry(recentLoc, recentTime, identityKey, "Recent"))
+            }
+
+            reports.networkLocations.forEachIndexed { index, loc ->
+                val time = reports.networkLocationTimestamps.getOrNull(index)
+                locations.add(buildLocationEntry(loc, time, identityKey, "Network ${index + 1}"))
+            }
+        }
+
+        return LocationResult(deviceName, locations)
+    }
+
+    private fun buildLocationEntry(
+        report: dev.tupolev.ata.proto.LocationReport,
+        time: dev.tupolev.ata.proto.Time?,
+        identityKey: ByteArray?,
+        label: String,
+    ): LocationEntry {
+        val millis = time?.let { it.seconds.toLong() * 1000 } ?: 0
+        val status = report.status.name
+        val geoLocation = report.geoLocation
+        val accuracy = geoLocation?.accuracy
+        val semanticLocation = report.semanticLocation?.locationName
+
+        var latitude: Double? = null
+        var longitude: Double? = null
+        var altitude: Int? = null
+
+        val geo = geoLocation?.encryptedReport
+        if (geoLocation != null && geo != null && identityKey != null) {
+            try {
+                val encLoc = geo.encryptedLocation.toByteArray()
+                val pubKeyRandom = geo.publicKeyRandom.toByteArray()
+                val deviceTimeOffset = geoLocation.deviceTimeOffset.toLong()
+
+                val decrypted = LocationDecryptor.decryptLocation(
+                    identityKey, encLoc, pubKeyRandom, deviceTimeOffset
+                )
+                latitude = decrypted.latitude
+                longitude = decrypted.longitude
+                altitude = decrypted.altitude
+            } catch (e: Exception) {
+                Log.e(TAG, "Error decrypting location for $label", e)
+            }
+        }
+
+        return LocationEntry(
+            label = label,
+            timestamp = millis,
+            status = status,
+            accuracy = accuracy,
+            latitude = latitude,
+            longitude = longitude,
+            altitude = altitude,
+            semanticLocation = semanticLocation,
+        )
+    }
+
+    private fun registerDevicesOnServer() {
+        val serverUrl = tokenStorage.getServerUrl() ?: return
+        val firebaseToken = firebaseToken ?: return
+        val deviceIds = tokenStorage.getDeviceIds()
+        if (deviceIds.isEmpty()) return
+
+        for (id in deviceIds) {
+            try {
+                TraccarApiClient.registerDevice(serverUrl, id, firebaseToken)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error registering device $id", e)
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "DeviceRepository"
+        private const val DEFAULT_SERVER_URL = "http://demo.traccar.org:5055"
+    }
+}
+
+data class LocationEntry(
+    val label: String,
+    val timestamp: Long = 0,
+    val status: String? = null,
+    val accuracy: Float? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val altitude: Int? = null,
+    val semanticLocation: String? = null,
+)
+
+data class LocationResult(
+    val deviceName: String,
+    val locations: List<LocationEntry>,
+)
