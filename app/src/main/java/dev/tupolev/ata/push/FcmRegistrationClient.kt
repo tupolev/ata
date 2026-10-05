@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import dev.tupolev.ata.BuildConfig
 import dev.tupolev.ata.proto.checkin.AndroidCheckinProto
 import dev.tupolev.ata.proto.checkin.AndroidCheckinRequest
 import dev.tupolev.ata.proto.checkin.AndroidCheckinResponse
@@ -41,13 +42,18 @@ object FcmRegistrationClient {
 
     private const val PROJECT_ID = "google.com:api-project-289722593072"
     private const val APP_ID = "1:289722593072:android:3cfcf5bc359f0308"
-    private const val API_KEY = "AIzaSyD_gko3P392v6how2H7UpdeXQ0v2HLettc"
     private const val BUNDLE_ID = "com.google.android.apps.adm"
     private const val CHROME_VERSION = "133.0.6917.92"
     private const val ADM_PACKAGE = "com.google.android.apps.adm"
     private const val ADM_CERT = "38918a453d07199354f8b19af05ec6562ced5788"
 
     private val client = OkHttpClient()
+
+    private fun requireApiKey(): String =
+        BuildConfig.FIND_HUB_API_KEY.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException(
+                "Missing ATA_GOOGLE_API_KEY build configuration."
+            )
 
     fun register(): FcmCredentials {
         val checkinResult = gcmCheckin()
@@ -213,7 +219,7 @@ object FcmRegistrationClient {
             .url("${FCM_INSTALLATION_URL}projects/$PROJECT_ID/installations")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .header("x-firebase-client", hbHeader)
-            .header("x-goog-api-key", API_KEY)
+            .header("x-goog-api-key", requireApiKey())
             .header("X-Android-Package", ADM_PACKAGE)
             .header("X-Android-Cert", ADM_CERT)
             .build()
@@ -245,7 +251,7 @@ object FcmRegistrationClient {
         val request = Request.Builder()
             .url("${FCM_REGISTRATION_URL}projects/$PROJECT_ID/registrations")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
-            .header("x-goog-api-key", API_KEY)
+            .header("x-goog-api-key", requireApiKey())
             .header("x-goog-firebase-installations-auth", installToken)
             .header("X-Android-Package", ADM_PACKAGE)
             .header("X-Android-Cert", ADM_CERT)
