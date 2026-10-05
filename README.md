@@ -296,14 +296,20 @@ The normal CI build can still compile without the value. Runtime creation of a *
 
 The repository includes `.github/workflows/release.yml`.
 
-When a tag such as `v0.1.0` is pushed, GitHub Actions:
+A release can be created in either of two ways:
+
+- push a tag such as `v0.1.0`; or
+- open **Actions → Release APK → Run workflow**, enter a version such as `v0.1.0`, and run it manually.
+
+GitHub Actions then:
 
 1. builds an installable debug-signed APK;
 2. renames it to `ATA-v0.1.0.apk`;
-3. creates a GitHub Release automatically;
-4. attaches the APK to that release.
+3. creates the tag when necessary;
+4. creates a GitHub Release;
+5. attaches the APK to that release.
 
-Make sure `ATA_GOOGLE_API_KEY` exists as a GitHub Actions secret before creating the release tag.
+Make sure `ATA_GOOGLE_API_KEY` exists as a GitHub Actions secret before creating a release if you want native first-time FCM registration to work. A complete imported GoogleFindMyTools `secrets.json` with reusable `fcm_credentials` does not need to perform that registration immediately.
 
 ## Build
 
