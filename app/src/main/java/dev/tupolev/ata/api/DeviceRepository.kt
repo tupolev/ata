@@ -18,9 +18,10 @@ import dev.tupolev.ata.util.LocationDecryptor
 
 class DeviceRepository(context: Context) {
 
-    private val tokenStorage = TokenStorage(context)
+    private val appContext = context.applicationContext
+    private val tokenStorage = TokenStorage(appContext)
     private val androidId: String = Settings.Secure.getString(
-        context.contentResolver, Settings.Secure.ANDROID_ID
+        appContext.contentResolver, Settings.Secure.ANDROID_ID
     )
 
     private var fcmCredentials: FcmCredentials? = null
@@ -237,7 +238,7 @@ class DeviceRepository(context: Context) {
             }
         }
 
-        val creds = FcmRegistrationClient.register()
+        val creds = FcmRegistrationClient.register(appContext)
         fcmCredentials = creds
 
         val json = JSONObject().apply {
