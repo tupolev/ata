@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.1.0"
+        required: true
+        default: "v0.1.0"
 
 permissions:
   contents: write
@@ -28,10 +34,20 @@ jobs:
         env:
           ATA_GOOGLE_API_KEY: ${{ secrets.ATA_GOOGLE_API_KEY }}
 
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "ATA-${GITHUB_REF_NAME}.apk"
+        run: cp app/build/outputs/apk/debug/app-debug.apk "ATA-${{ steps.version.outputs.value }}.apk"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" "ATA-${GITHUB_REF_NAME}.apk" --generate-notes --title "ATA ${GITHUB_REF_NAME}"
+        run: gh release create "${{ steps.version.outputs.value }}" "ATA-${{ steps.version.outputs.value }}.apk" --target "${GITHUB_SHA}" --generate-notes --title "ATA ${{ steps.version.outputs.value }}"
