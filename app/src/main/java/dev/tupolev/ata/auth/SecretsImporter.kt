@@ -7,6 +7,7 @@ data class ImportResult(
     val aasToken: Boolean,
     val sharedKey: Boolean,
     val ownerKey: Boolean,
+    val fcmCredentials: Boolean,
 ) {
     val usable: Boolean get() = aasToken && ownerKey
 }
@@ -24,6 +25,41 @@ object SecretsImporter {
         shared?.let(storage::saveSharedKey)
         owner?.let(storage::saveOwnerKey)
 
-        return ImportResult(username != null, aas != null, shared != null, owner != null)
+        val fcmImported = importFcmCredentials(json.optJSONObject("fcm_credentials"), storage)
+
+        return ImportResult(
+            username = username != null,
+            aasToken = aas != null,
+            sharedKey = shared != null,
+            ownerKey = owner != null,
+            fcmCredentials = fcmImported,
+        )
+    }
+
+    private fun importFcmCredentials(source: JSONObject?, storage: TokenStorage): Boolean {
+        if (source == null) return false
+
+        return try {
+            val keys = source.getJSONObject("keys")
+            val gcm = source.getJSONObject("gcm")
+            val fcm = source.getJSONObject("fcm")
+            val registration = fcm.getJSONObject("registration")
+
+            val converted = JSONObject().apply {
+                put("gcmAndroidId", gcm.get("android_id").toString())
+                put("gcmSecurityToken", gcm.get("security_token").toString())
+                put("gcmToken", gcm.getString("token"))
+                put("gcmAppId", gcm.getString("app_id"))
+                put("fcmToken", registration.getString("token"))
+                put("publicKey", keys.getString("public"))
+                put("privateKey", keys.getString("private"))
+                put("authSecret", keys.getString("secret"))
+            }
+
+            storage.saveFcmCredentials(converted.toString())
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 }
