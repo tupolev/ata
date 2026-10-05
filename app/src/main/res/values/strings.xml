@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">ATA</string>
+    <string name="sign_in">Sign in to Google</string>
+    <string name="key_setup">Unlock Find Hub encryption</string>
+</resources>
