@@ -1,5 +1,6 @@
 package dev.tupolev.ata.push
 
+import android.content.Context
 import android.util.Base64
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
@@ -7,7 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import dev.tupolev.ata.BuildConfig
+import dev.tupolev.ata.R
 import dev.tupolev.ata.proto.checkin.AndroidCheckinProto
 import dev.tupolev.ata.proto.checkin.AndroidCheckinRequest
 import dev.tupolev.ata.proto.checkin.AndroidCheckinResponse
@@ -49,13 +50,13 @@ object FcmRegistrationClient {
 
     private val client = OkHttpClient()
 
-    private fun requireApiKey(): String =
-        BuildConfig.FIND_HUB_API_KEY.takeIf { it.isNotBlank() }
+    private fun requireApiKey(context: Context): String =
+        context.getString(R.string.find_hub_api_key).takeIf { it.isNotBlank() }
             ?: throw IllegalStateException(
                 "Missing ATA_GOOGLE_API_KEY build configuration."
             )
 
-    fun register(): FcmCredentials {
+    fun register(context: Context): FcmCredentials {
         val checkinResult = gcmCheckin()
         val androidId = checkinResult.first
         val securityToken = checkinResult.second
@@ -66,10 +67,10 @@ object FcmRegistrationClient {
 
         val keys = generateKeys()
 
-        val installResult = fcmInstall()
+        val installResult = fcmInstall(context)
         val installToken = installResult.first
 
-        val fcmToken = fcmRegister(gcmToken, installToken, keys)
+        val fcmToken = fcmRegister(context, gcmToken, installToken, keys)
 
         return FcmCredentials(
             gcmAndroidId = androidId,
@@ -197,7 +198,7 @@ object FcmRegistrationClient {
         )
     }
 
-    private fun fcmInstall(): Pair<String, String> {
+    private fun fcmInstall(context: Context): Pair<String, String> {
         val fid = ByteArray(17)
         SecureRandom().nextBytes(fid)
         fid[0] = (0b01110000 or (fid[0].toInt() and 0x0F)).toByte()
@@ -219,7 +220,7 @@ object FcmRegistrationClient {
             .url("${FCM_INSTALLATION_URL}projects/$PROJECT_ID/installations")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .header("x-firebase-client", hbHeader)
-            .header("x-goog-api-key", requireApiKey())
+            .header("x-goog-api-key", requireApiKey(context))
             .header("X-Android-Package", ADM_PACKAGE)
             .header("X-Android-Cert", ADM_CERT)
             .build()
@@ -238,7 +239,7 @@ object FcmRegistrationClient {
         return Pair(token, installFid)
     }
 
-    private fun fcmRegister(gcmToken: String, installToken: String, keys: EcKeys): String {
+    private fun fcmRegister(context: Context, gcmToken: String, installToken: String, keys: EcKeys): String {
         val payload = JSONObject().apply {
             put("web", JSONObject().apply {
                 put("applicationPubKey", JSONObject.NULL)
@@ -251,7 +252,7 @@ object FcmRegistrationClient {
         val request = Request.Builder()
             .url("${FCM_REGISTRATION_URL}projects/$PROJECT_ID/registrations")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
-            .header("x-goog-api-key", requireApiKey())
+            .header("x-goog-api-key", requireApiKey(context))
             .header("x-goog-firebase-installations-auth", installToken)
             .header("X-Android-Package", ADM_PACKAGE)
             .header("X-Android-Cert", ADM_CERT)
