@@ -4,6 +4,13 @@ plugins {
     alias(libs.plugins.wire)
 }
 
+val findHubApiKey = providers.gradleProperty("ATA_GOOGLE_API_KEY")
+    .orElse(providers.environmentVariable("ATA_GOOGLE_API_KEY"))
+    .orElse("")
+    .get()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 android {
     namespace = "dev.tupolev.ata"
     compileSdk = 37
@@ -13,6 +20,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "FIND_HUB_API_KEY", "\"$findHubApiKey\"")
     }
     buildTypes {
         release {
@@ -24,7 +32,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 wire { kotlin { android = true } }
 
